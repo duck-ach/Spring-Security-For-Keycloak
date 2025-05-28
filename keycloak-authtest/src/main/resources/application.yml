@@ -1,0 +1,8 @@
+spring.application.name: keycloak-authtest
+server:
+  port: 8080
+
+logging:
+  level:
+    org.springframework.security.saml2: DEBUG
+    org.springframework.security.web.authentication: DEBUG

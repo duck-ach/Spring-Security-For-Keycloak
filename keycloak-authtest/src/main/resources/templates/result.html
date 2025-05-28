@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <title>결과</title>
+</head>
+<body>
+<h2 th:text="'인증 방식: ' + ${authType}"></h2>
+<p th:text="'이름: ' + ${name}"></p>
+<p th:if="${email}" th:text="'이메일: ' + ${email}"></p>
+<ul>
+    <li th:each="entry : ${header}" th:text="'Header: ' + ${entry.key} + ' = ' + ${entry.value}"></li>
+</ul>
+<a href="/">다시 선택</a>
+</body>
+</html>
