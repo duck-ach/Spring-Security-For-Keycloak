@@ -11,12 +11,18 @@ import org.springframework.security.oauth2.client.registration.InMemoryClientReg
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.saml2.core.Saml2X509Credential;
+import org.springframework.security.saml2.provider.service.authentication.Saml2Authentication;
+import org.springframework.security.saml2.provider.service.authentication.logout.Saml2LogoutRequest;
+import org.springframework.security.saml2.provider.service.registration.InMemoryRelyingPartyRegistrationRepository;
 import org.springframework.security.saml2.provider.service.registration.RelyingPartyRegistration;
 import org.springframework.security.saml2.provider.service.registration.RelyingPartyRegistrationRepository;
-import org.springframework.security.saml2.provider.service.registration.InMemoryRelyingPartyRegistrationRepository;
+import org.springframework.security.saml2.provider.service.registration.Saml2MessageBinding;
+import org.springframework.security.saml2.provider.service.web.authentication.logout.OpenSaml4LogoutRequestResolver;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.logout.LogoutSuccessHandler;
 
 import java.io.InputStream;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
@@ -58,6 +64,8 @@ public class AuthConfig {
     @Bean
     public RelyingPartyRegistrationRepository relyingPartyRegistrationRepository() throws Exception {
 
+
+
         // SP가 사용할 X.509 인증서 설정
         X509Certificate spCert = loadCertificate("classpath:cert/sp.crt");
         PrivateKey spKey = loadPrivateKey("classpath:cert/sp.key");
@@ -70,6 +78,7 @@ public class AuthConfig {
         X509Certificate idpCert = loadCertificate("classpath:cert/idp.crt");
         
         RelyingPartyRegistration registration = RelyingPartyRegistration
+
 
                 // 내부 Spring 에서 사용하는 ID (/saml2/authenticate/legacy-saml)
                 .withRegistrationId("legacy-saml")
@@ -94,6 +103,10 @@ public class AuthConfig {
                         // Keycloak의 SSO 엔드포인트 URL
                         .singleSignOnServiceLocation("https://kc1.pream.com:8443/realms/master/protocol/saml")
 
+                        // Keycloak의 SLO 엔드포인트 URL
+                        .singleLogoutServiceLocation("https://kc1.pream.com:8443/realms/master/protocol/saml")
+                        .singleLogoutServiceBinding(Saml2MessageBinding.REDIRECT)
+
                         // Keycloak의 클라이언트 설정에서 "Sign Documents"가 꺼져 있다면 false
                         .wantAuthnRequestsSigned(false)
 
@@ -107,9 +120,42 @@ public class AuthConfig {
         return new InMemoryRelyingPartyRegistrationRepository(registration);
     }
 
+    // 로그아웃 성공 시 IDP에 SLO 요청 보내는 핸들러
+    @Bean
+    public LogoutSuccessHandler samlLogoutSuccessHandler(RelyingPartyRegistrationRepository relyingPartyRegistrationRepository) {
+        return (request, response, authentication) -> {
+            if (!(authentication instanceof Saml2Authentication samlAuth)) {
+                response.sendRedirect("/");
+                return;
+            }
+
+            String registrationId = samlAuth.getName(); // name은 registrationId가 아님에 주의!
+
+            // registrationId는 authentication 객체에서 직접 알 수 없으므로, 간접적으로 추정하거나 설정에 맞춰 사용
+            // 여기선 "legacy-saml"로 고정 사용 (사용 중인 registrationId)
+            RelyingPartyRegistration registration = relyingPartyRegistrationRepository.findByRegistrationId("legacy-saml");
+
+            OpenSaml4LogoutRequestResolver resolver = new OpenSaml4LogoutRequestResolver(relyingPartyRegistrationRepository);
+            Saml2LogoutRequest logoutRequest = resolver.resolve(request, samlAuth);
+
+            if (logoutRequest == null) {
+                response.sendRedirect("/");
+                return;
+            }
+
+            String samlRequest = URLEncoder.encode(logoutRequest.getSamlRequest(), StandardCharsets.UTF_8);
+            String sloEndpoint = registration.getAssertingPartyDetails().getSingleLogoutServiceLocation();
+            String relayState = URLEncoder.encode("/", StandardCharsets.UTF_8);
+
+            String redirectUrl = sloEndpoint + "?SAMLRequest=" + samlRequest + "&RelayState=" + relayState;
+            response.sendRedirect(redirectUrl);
+        };
+    }
+
     // Spring Security
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, RelyingPartyRegistrationRepository relyingPartyRegistrationRepository) throws Exception {
+
         http
                 // Filter Request 설정
                 .authorizeHttpRequests(auth -> auth
@@ -126,11 +172,13 @@ public class AuthConfig {
 
                 )
                 .logout(logout -> logout
+                        .logoutUrl("/logout")
                         .logoutSuccessUrl("/")
+                        .logoutSuccessHandler(samlLogoutSuccessHandler(relyingPartyRegistrationRepository))
                         .invalidateHttpSession(true)
                         .deleteCookies("JSESSIONID")
                 )
-                .csrf(csrf -> csrf.disable()); // 개발 중에는 CSRF 꺼두세요
+                .csrf(csrf -> csrf.disable()); // 개발 중에는 CSRF OFF
 
         return http.build();
     }
