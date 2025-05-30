@@ -4,5 +4,6 @@ server:
 
 logging:
   level:
-    org.springframework.security.saml2: DEBUG
-    org.springframework.security.web.authentication: DEBUG
+    org.springframework.security.saml2: TRACE
+    org.springframework.security.web.authentication: TRACE
+    org.springframework.security.oauth2.client: TRACE

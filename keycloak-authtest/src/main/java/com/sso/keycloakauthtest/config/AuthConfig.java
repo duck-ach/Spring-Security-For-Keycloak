@@ -1,13 +1,26 @@
 package com.sso.keycloakauthtest.config;
 
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.apache.http.conn.ssl.NoopHostnameVerifier;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.ssl.SSLContextBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.Resource;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.oauth2.client.endpoint.DefaultAuthorizationCodeTokenResponseClient;
+import org.springframework.security.oauth2.client.endpoint.OAuth2AccessTokenResponseClient;
+import org.springframework.security.oauth2.client.endpoint.OAuth2AuthorizationCodeGrantRequest;
 import org.springframework.security.oauth2.client.registration.ClientRegistration;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.oauth2.client.registration.InMemoryClientRegistrationRepository;
+import org.springframework.security.oauth2.client.web.OAuth2LoginAuthenticationFilter;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.saml2.core.Saml2X509Credential;
@@ -20,11 +33,17 @@ import org.springframework.security.saml2.provider.service.registration.Saml2Mes
 import org.springframework.security.saml2.provider.service.web.authentication.logout.OpenSaml4LogoutRequestResolver;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.logout.LogoutSuccessHandler;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.filter.OncePerRequestFilter;
 
+import javax.net.ssl.SSLContext;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URLEncoder;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
+import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -41,30 +60,62 @@ public class AuthConfig {
     // OIDC
     @Bean
     public ClientRegistrationRepository clientRegistrationRepository() {
-        ClientRegistration keycloakOidc = ClientRegistration.withRegistrationId("keycloak-oidc")
-                .clientId("spring-oidc-client")
-                .clientSecret("secret")
-                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
-                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
-                .redirectUri("{baseUrl}/login/oauth2/code/{registrationId}")
-                .scope("openid", "profile", "email")
-                .authorizationUri("http://localhost:8080/realms/myrealm/protocol/openid-connect/auth")
-                .tokenUri("http://localhost:8080/realms/myrealm/protocol/openid-connect/token")
-                .userInfoUri("http://localhost:8080/realms/myrealm/protocol/openid-connect/userinfo")
-                .userNameAttributeName("preferred_username")
-                .jwkSetUri("http://localhost:8080/realms/myrealm/protocol/openid-connect/certs")
-                .issuerUri("http://localhost:8080/realms/myrealm")
-                .clientName("Keycloak OIDC")
+        ClientRegistration keycloakOidc = ClientRegistration.withRegistrationId("legacy-oidc") // Spring Security가 내부적으로 어떤 OIDC 클라이언트인지 식별하기 위해 사용하는 ID
+                .clientId("legacy-oidc") // Keycloak Client ID
+                .clientSecret("LOr6n00hkg43qrUyAcSYfHGkxKhBZQIU") // Keycloak Client Secret
+                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST) // 클라이언트가 토큰 요청할 때 사용하는 인증 방식
+                //.clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST) // 클라이언트가 토큰 요청할 때 사용하는 인증 방식
+                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE) // OAuth2 인증 방식 지정
+                .redirectUri("http://localhost:8080/login/oauth2/code/legacy-oidc") // 인증 후 Keycloak이 리디렉션하는 URI
+                .scope("openid", "profile", "email") // 요청할 권한의 범위 (required openid)
+                .authorizationUri("https://kc1.pream.com:8443/realms/master/protocol/openid-connect/auth") // 인증 코드 요청을 위한 Keycloak의 인증 URL
+                .tokenUri("https://kc1.pream.com:8443/realms/master/protocol/openid-connect/token") // 인증 코드로 Access Token을 발급받는 URL
+                .userInfoUri("https://kc1.pream.com:8443/realms/master/protocol/openid-connect/userinfo") // Access Token을 이용해서 사용자 정보를 조회하는 URL
+                .userNameAttributeName("preferred_username") // Spring Security에서 사용자 이름으로 사용할 속성
+                .jwkSetUri("https://kc1.pream.com:8443/realms/master/protocol/openid-connect/certs") // JWT 토큰 서명을 검증하기 위한 공개키를 담고 있는 URL
+                .issuerUri("https://kc1.pream.com:8443/realms/master") // 발급자(issuer) URI로, 토큰의 유효성을 검증할 때 사용
+                .clientName("Keycloak 으로 로그인하기") // 클라이언트의 표시 이름. 주로 로그인 페이지에서 사용자에게 보여질 이름
                 .build();
+        System.out.println("keycloakOidc = " + keycloakOidc);
 
         return new InMemoryClientRegistrationRepository(keycloakOidc);
     }
 
+    // 인증서가 포함된 RestTemplate을 쓰도록 AccessTokenResponseClient 커스터마이징
+    @Bean
+    public OAuth2AccessTokenResponseClient<OAuth2AuthorizationCodeGrantRequest> accessTokenResponseClient() throws Exception {
+        // Keycloak 인증서 로드 (src/main/resources/cert/keycloak.crt 경로에 인증서 PEM 파일 위치해야 함)
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        InputStream certInput = new ClassPathResource("cert/keycloak.crt").getInputStream();
+        X509Certificate caCert = (X509Certificate) cf.generateCertificate(certInput);
+        certInput.close();
+
+        KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        keyStore.load(null, null);
+        keyStore.setCertificateEntry("keycloak", caCert);
+
+        SSLContext sslContext = SSLContextBuilder.create()
+                .loadTrustMaterial(keyStore, null)
+                .build();
+
+        HttpClient httpClient = HttpClientBuilder.create()
+                .setSSLContext(sslContext)
+                .setSSLHostnameVerifier(NoopHostnameVerifier.INSTANCE) // 필요 시 호스트명 검증 비활성화
+                .build();
+
+        HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory(httpClient);
+        RestTemplate restTemplate = new RestTemplate(requestFactory);
+
+        DefaultAuthorizationCodeTokenResponseClient client = new DefaultAuthorizationCodeTokenResponseClient();
+        client.setRestOperations(restTemplate);
+// 이거 빨간줄 뜸 ㅠ 월욜와서하기
+        return client;
+    }
+
+
     // SAML(SP)
     @Bean
     public RelyingPartyRegistrationRepository relyingPartyRegistrationRepository() throws Exception {
-
-
 
         // SP가 사용할 X.509 인증서 설정
         X509Certificate spCert = loadCertificate("classpath:cert/sp.crt");
@@ -116,6 +167,7 @@ public class AuthConfig {
                         ))
                 )
                 .build();
+        System.out.println("SAML registration = " + registration);
 
         return new InMemoryRelyingPartyRegistrationRepository(registration);
     }
@@ -128,8 +180,6 @@ public class AuthConfig {
                 response.sendRedirect("/");
                 return;
             }
-
-            String registrationId = samlAuth.getName(); // name은 registrationId가 아님에 주의!
 
             // registrationId는 authentication 객체에서 직접 알 수 없으므로, 간접적으로 추정하거나 설정에 맞춰 사용
             // 여기선 "legacy-saml"로 고정 사용 (사용 중인 registrationId)
@@ -160,10 +210,16 @@ public class AuthConfig {
                 // Filter Request 설정
                 .authorizeHttpRequests(auth -> auth
                         // permit 설정
-                        .requestMatchers("/", "/index.html", "/css/**", "/js/**").permitAll()
+                        .requestMatchers("/", "/index.html", "/css/**", "/js/**", "/login/oauth2/code/**", "/oauth2/authorization/**").permitAll()
                         // 위 permit 외에는 인증 필요
                         .anyRequest().authenticated()
                 )
+                // OIDC
+                .oauth2Login(oauth2 -> oauth2
+                        .loginPage("/oauth2/authorization/legacy-oidc") // OIDC 로그인 진입점 (필요 시 설정)
+                        .defaultSuccessUrl("/result", true)
+                )
+                // SAML
                 .saml2Login(saml -> saml
                         // 로그인 페이지 설정
                         .loginPage("/saml2/authenticate/legacy-saml")
@@ -179,6 +235,17 @@ public class AuthConfig {
                         .deleteCookies("JSESSIONID")
                 )
                 .csrf(csrf -> csrf.disable()); // 개발 중에는 CSRF OFF
+
+        // OAuth2LoginAuthenticationFilter 로그 찍기
+        http.addFilterBefore(new OncePerRequestFilter() {
+            @Override
+            protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+                    throws ServletException, IOException {
+                System.out.println(">>> Request URI: " + request.getRequestURI());
+                filterChain.doFilter(request, response);
+            }
+        }, OAuth2LoginAuthenticationFilter.class);
+
 
         return http.build();
     }

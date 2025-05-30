@@ -12,8 +12,8 @@
 </div>
 <div th:unless="${#authorization.expression('isAuthenticated()')}">
     <h2>인증 방식 선택</h2>
-    <a href="/oauth2/authorization/keycloak-oidc">OIDC로 로그인</a><br/>
-    <a href="/saml2/authenticate/keycloak-saml">SAML로 로그인</a>
+    <a href="/oauth2/authorization/legacy-oidc">OIDC로 로그인</a><br/>
+    <a href="/saml2/authenticate/legacy-saml">SAML로 로그인</a>
 </div>
 </body>
 </html>
