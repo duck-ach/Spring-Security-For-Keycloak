@@ -3,7 +3,7 @@ package com.sso.keycloakauthtest.controller;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.core.oidc.user.OidcUser;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
 import org.springframework.security.saml2.provider.service.authentication.Saml2Authentication;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
@@ -36,12 +36,11 @@ public class AuthController {
 
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         model.addAttribute("header", strobj);
+        System.out.println("인증방식 = " + auth);
         if (auth != null && auth.isAuthenticated()) {
-            if (principal instanceof OidcUser oidcUser) {
+            if (principal instanceof OAuth2AuthenticationToken oAuthUser) {
                 model.addAttribute("authType", "OIDC");
-                model.addAttribute("name", oidcUser.getFullName());
-                model.addAttribute("email", oidcUser.getEmail());
-
+                model.addAttribute("name", oAuthUser.getName());
             } else if (principal instanceof Saml2Authentication) {
                 Saml2Authentication samlPrincipal = (Saml2Authentication)auth;
                 model.addAttribute("authType", "SAML");

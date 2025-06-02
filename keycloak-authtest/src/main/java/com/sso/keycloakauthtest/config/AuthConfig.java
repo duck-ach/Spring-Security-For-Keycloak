@@ -5,6 +5,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.http.conn.ssl.NoopHostnameVerifier;
+import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.ssl.SSLContextBuilder;
 import org.springframework.context.annotation.Bean;
@@ -15,8 +16,6 @@ import org.springframework.core.io.Resource;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.oauth2.client.endpoint.DefaultAuthorizationCodeTokenResponseClient;
-import org.springframework.security.oauth2.client.endpoint.OAuth2AccessTokenResponseClient;
-import org.springframework.security.oauth2.client.endpoint.OAuth2AuthorizationCodeGrantRequest;
 import org.springframework.security.oauth2.client.registration.ClientRegistration;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.oauth2.client.registration.InMemoryClientRegistrationRepository;
@@ -40,7 +39,6 @@ import javax.net.ssl.SSLContext;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.KeyStore;
@@ -55,7 +53,6 @@ import java.util.Base64;
  */
 @Configuration
 public class AuthConfig {
-
 
     // OIDC
     @Bean
@@ -74,44 +71,11 @@ public class AuthConfig {
                 .userNameAttributeName("preferred_username") // Spring Security에서 사용자 이름으로 사용할 속성
                 .jwkSetUri("https://kc1.pream.com:8443/realms/master/protocol/openid-connect/certs") // JWT 토큰 서명을 검증하기 위한 공개키를 담고 있는 URL
                 .issuerUri("https://kc1.pream.com:8443/realms/master") // 발급자(issuer) URI로, 토큰의 유효성을 검증할 때 사용
-                .clientName("Keycloak 으로 로그인하기") // 클라이언트의 표시 이름. 주로 로그인 페이지에서 사용자에게 보여질 이름
                 .build();
         System.out.println("keycloakOidc = " + keycloakOidc);
 
         return new InMemoryClientRegistrationRepository(keycloakOidc);
     }
-
-    // 인증서가 포함된 RestTemplate을 쓰도록 AccessTokenResponseClient 커스터마이징
-    @Bean
-    public OAuth2AccessTokenResponseClient<OAuth2AuthorizationCodeGrantRequest> accessTokenResponseClient() throws Exception {
-        // Keycloak 인증서 로드 (src/main/resources/cert/keycloak.crt 경로에 인증서 PEM 파일 위치해야 함)
-        CertificateFactory cf = CertificateFactory.getInstance("X.509");
-        InputStream certInput = new ClassPathResource("cert/keycloak.crt").getInputStream();
-        X509Certificate caCert = (X509Certificate) cf.generateCertificate(certInput);
-        certInput.close();
-
-        KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-        keyStore.load(null, null);
-        keyStore.setCertificateEntry("keycloak", caCert);
-
-        SSLContext sslContext = SSLContextBuilder.create()
-                .loadTrustMaterial(keyStore, null)
-                .build();
-
-        HttpClient httpClient = HttpClientBuilder.create()
-                .setSSLContext(sslContext)
-                .setSSLHostnameVerifier(NoopHostnameVerifier.INSTANCE) // 필요 시 호스트명 검증 비활성화
-                .build();
-
-        HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory(httpClient);
-        RestTemplate restTemplate = new RestTemplate(requestFactory);
-
-        DefaultAuthorizationCodeTokenResponseClient client = new DefaultAuthorizationCodeTokenResponseClient();
-        client.setRestOperations(restTemplate);
-// 이거 빨간줄 뜸 ㅠ 월욜와서하기
-        return client;
-    }
-
 
     // SAML(SP)
     @Bean
