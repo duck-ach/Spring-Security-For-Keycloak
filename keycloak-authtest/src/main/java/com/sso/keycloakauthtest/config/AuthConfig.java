@@ -15,6 +15,7 @@ import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.Resource;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
 import org.springframework.security.oauth2.client.endpoint.DefaultAuthorizationCodeTokenResponseClient;
 import org.springframework.security.oauth2.client.registration.ClientRegistration;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
@@ -22,6 +23,7 @@ import org.springframework.security.oauth2.client.registration.InMemoryClientReg
 import org.springframework.security.oauth2.client.web.OAuth2LoginAuthenticationFilter;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.security.saml2.core.Saml2X509Credential;
 import org.springframework.security.saml2.provider.service.authentication.Saml2Authentication;
 import org.springframework.security.saml2.provider.service.authentication.logout.Saml2LogoutRequest;
@@ -138,31 +140,34 @@ public class AuthConfig {
 
     // 로그아웃 성공 시 IDP에 SLO 요청 보내는 핸들러
     @Bean
-    public LogoutSuccessHandler samlLogoutSuccessHandler(RelyingPartyRegistrationRepository relyingPartyRegistrationRepository) {
+    public LogoutSuccessHandler oidcAndSamlLogoutSuccessHandler(RelyingPartyRegistrationRepository relyingPartyRegistrationRepository) {
         return (request, response, authentication) -> {
-            if (!(authentication instanceof Saml2Authentication samlAuth)) {
-                response.sendRedirect("/");
-                return;
+            if (authentication instanceof Saml2Authentication samlAuth) {
+                // 기존 SAML SLO 처리 로직
+                RelyingPartyRegistration registration = relyingPartyRegistrationRepository.findByRegistrationId("legacy-saml");
+                OpenSaml4LogoutRequestResolver resolver = new OpenSaml4LogoutRequestResolver(relyingPartyRegistrationRepository);
+                Saml2LogoutRequest logoutRequest = resolver.resolve(request, samlAuth);
+                if (logoutRequest == null) {
+                    response.sendRedirect("/");
+                    return;
+                }
+                String samlRequest = URLEncoder.encode(logoutRequest.getSamlRequest(), StandardCharsets.UTF_8);
+                String sloEndpoint = registration.getAssertingPartyDetails().getSingleLogoutServiceLocation();
+                String relayState = URLEncoder.encode("/", StandardCharsets.UTF_8);
+                String redirectUrl = sloEndpoint + "?SAMLRequest=" + samlRequest + "&RelayState=" + relayState;
+                response.sendRedirect(redirectUrl);
+
+            } else if(authentication instanceof OAuth2AuthenticationToken oauth2Auth)  {
+                // OIDC SLO 처리
+                OidcUser oidcUser = (OidcUser) oauth2Auth.getPrincipal();
+                String idTokenValue = oidcUser.getIdToken().getTokenValue();
+                System.out.println("logout.idTokenValue = " + idTokenValue);
+                String logoutUrl = "https://kc1.pream.com:8443/realms/master/protocol/openid-connect/logout"
+                        + "?id_token_hint=" + URLEncoder.encode(idTokenValue, StandardCharsets.UTF_8)
+                        + "&post_logout_redirect_uri=" + URLEncoder.encode("http://localhost:8080/", StandardCharsets.UTF_8);
+                System.out.println("logoutUrl = " + logoutUrl);
+                response.sendRedirect(logoutUrl);
             }
-
-            // registrationId는 authentication 객체에서 직접 알 수 없으므로, 간접적으로 추정하거나 설정에 맞춰 사용
-            // 여기선 "legacy-saml"로 고정 사용 (사용 중인 registrationId)
-            RelyingPartyRegistration registration = relyingPartyRegistrationRepository.findByRegistrationId("legacy-saml");
-
-            OpenSaml4LogoutRequestResolver resolver = new OpenSaml4LogoutRequestResolver(relyingPartyRegistrationRepository);
-            Saml2LogoutRequest logoutRequest = resolver.resolve(request, samlAuth);
-
-            if (logoutRequest == null) {
-                response.sendRedirect("/");
-                return;
-            }
-
-            String samlRequest = URLEncoder.encode(logoutRequest.getSamlRequest(), StandardCharsets.UTF_8);
-            String sloEndpoint = registration.getAssertingPartyDetails().getSingleLogoutServiceLocation();
-            String relayState = URLEncoder.encode("/", StandardCharsets.UTF_8);
-
-            String redirectUrl = sloEndpoint + "?SAMLRequest=" + samlRequest + "&RelayState=" + relayState;
-            response.sendRedirect(redirectUrl);
         };
     }
 
@@ -194,10 +199,11 @@ public class AuthConfig {
                 .logout(logout -> logout
                         .logoutUrl("/logout")
                         .logoutSuccessUrl("/")
-                        .logoutSuccessHandler(samlLogoutSuccessHandler(relyingPartyRegistrationRepository))
+                        .logoutSuccessHandler(oidcAndSamlLogoutSuccessHandler(relyingPartyRegistrationRepository))
                         .invalidateHttpSession(true)
                         .deleteCookies("JSESSIONID")
                 )
+
                 .csrf(csrf -> csrf.disable()); // 개발 중에는 CSRF OFF
 
         // OAuth2LoginAuthenticationFilter 로그 찍기
